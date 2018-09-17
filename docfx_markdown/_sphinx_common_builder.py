@@ -60,10 +60,10 @@ class CommonSphinxWriterHelpers:
 
         # Makes a local copy of the image
         if 'src' in atts:
+            builder = self.builder  # pylint: disable=E1101
+            srcdir = builder.srcdir
+            outdir = builder.outdir
             if image_dest is None:
-                builder = self.builder  # pylint: disable=E1101
-                srcdir = builder.srcdir
-                outdir = builder.outdir
                 current = os.path.dirname(os.path.join(
                     srcdir, builder.current_docname))
                 if current is None or not os.path.exists(current):
@@ -73,7 +73,7 @@ class CommonSphinxWriterHelpers:
                     os.path.join(outdir, builder.current_docname))
                 fold = current_dest
             else:
-                fold = image_dest
+                fold = os.path.join(outdir, image_dest)
 
             full = os.path.join(srcdir, atts['src'])
             ext = os.path.splitext(atts['src'])[-1]
@@ -88,6 +88,7 @@ class CommonSphinxWriterHelpers:
             atts['src'] = name
             atts['full'] = full
             atts['dest'] = dest
+            atts['uri'] = os.path.relpath(dest, outdir).replace("\\", "/")
         elif 'data' in atts:
             raise NotImplementedError()
         else:

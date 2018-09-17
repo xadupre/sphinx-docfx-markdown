@@ -35,6 +35,7 @@ I replicate its license here:
 
 .. versionadded:: 1.8
 """
+import ast
 import os
 import textwrap
 from os import path
@@ -65,6 +66,7 @@ class DocFxMdBuilder(Builder):
         """
         Builder.__init__(self, *args, **kwargs)
         self.logger = logging.getLogger("DocFxMdBuilder")
+        self.file_mapping = {}
 
     def init(self):
         """
@@ -79,7 +81,8 @@ class DocFxMdBuilder(Builder):
 
         # Function to convert the docname to a markdown file name.
         def file_transform(docname):
-            return docname + self.file_suffix
+            res = docname + self.file_suffix
+            return res
 
         # Function to convert the docname to a relative URI.
         def link_transform(docname):
@@ -95,7 +98,7 @@ class DocFxMdBuilder(Builder):
             self.link_transform = link_transform
         self.md_image_dest = self.config.md_image_dest
         self.md_template = jinja2.Template(self.config.md_header_template)
-
+        
     def get_outdated_docs(self):
         """
         Return an iterable of input files that are outdated.
@@ -122,17 +125,30 @@ class DocFxMdBuilder(Builder):
                 # source doesn't exist anymore
                 pass
 
-    def get_target_uri(self, docname, typ=None):
-        return self.link_transform(docname)
-
     def prepare_writing(self, docnames):
         self.writer = DocFxMdWriter(self)
+
+    def get_target_uri(self, docname, typ=None):
+        res = self.link_transform(self.clean_filename(docname))
+        return res
+        
+    def file_transform(self, docname):
+        """
+        Overwrite the function to remove subfolders.
+        """
+        raise NotImplementedError()
+        
+    def clean_filename(self, relative_name):
+        name, ext = os.path.splitext(relative_name)
+        name = name.replace("\\", "/").replace("/", ".").replace("_", "-")
+        return name + ext
 
     def get_outfilename(self, pagename):
         """
         Overwrite *get_target_uri* to control file names.
         """
-        return "{0}/{1}.md".format(self.outdir, pagename).replace("\\", "/")
+        res = "{0}/{1}.md".format(self.outdir, self.clean_filename(pagename)).replace("\\", "/")
+        return res
 
     def write_doc(self, docname, doctree):
         # type: (unicode, nodes.Node) -> None
@@ -197,6 +213,11 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.wrapper = textwrap.TextWrapper(
             width=STDINDENT, break_long_words=False, break_on_hyphens=False)
         self.md_template = self.builder.md_template
+        
+    def clean_everything(self):
+        self.states = [[]]
+        self.list_counter = []
+        self.new_state(0)
 
     def log_unknown(self, type, node):
         logger = logging.getLogger("DocFxMdBuilder")
@@ -213,46 +234,51 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.states.append([])
         self.stateindent.append(indent)
 
-    def end_state(self, wrap=True, end=[''], first=None):
+    def end_state(self, wrap=False, end=[''], first=None):
         content = self.states.pop()
         maxindent = sum(self.stateindent)
         indent = self.stateindent.pop()
-        result = []
-        toformat = []
 
-        def do_format():
+        def do_format(result, toformat):
             if not toformat:
                 return
             if wrap:
                 res = self.wrap(''.join(toformat), width=MAXWIDTH - maxindent)
             else:
-                res = ''.join(toformat).splitlines()
+                try:
+                    res = ''.join(toformat).splitlines()
+                except TypeError as e:
+                    raise TypeError("Unable to handle '{0}'".format(toformat)) from e
             if end:
                 res += end
             result.append((indent, res))
 
+        toformat = []
+        result = []
         for itemindent, item in content:
+            if item is None:
+                continue
             if itemindent == -1:
                 toformat.append(item)
             else:
-                do_format()
+                do_format(result, toformat)
                 result.append((indent + itemindent, item))
                 toformat = []
 
-        do_format()
+        do_format(result, toformat)
 
         if first is not None and result:
             itemindent, item = result[0]
             if item:
                 result.insert(0, (itemindent - indent, [first + item[0]]))
                 result[1] = (itemindent, item[1:])
-
         self.states[-1].extend(result)
 
     def visit_document(self, node):
         self.new_state(0)
         self._insert_to_yaml(node)
-        self._add_header_metadata(node)
+        self.add_after_the_first_title = self._add_header_metadata(node)
+        self.no_title_yet = True
         
     def _lookup_children(self, node, nodetype):
         if nodetype is None or isinstance(node, nodetype):
@@ -281,10 +307,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                    'page_description': description.astext() if description else "",
                    'datetime': datetime}
 
-        res = self.md_template.render(**context)
-        self.new_state(0)
-        self.add_text(res)
-        self.end_state(wrap=False, end=self.nl)
+        return self.md_template.render(**context)
 
     def depart_document(self, node):
         self.end_state()
@@ -389,6 +412,9 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         pass
 
     def visit_title(self, node):
+        if hasattr(self, "no_title_yet") and self.no_title_yet:
+            self.clean_everything()
+            self.no_title_yet = False
         if isinstance(node.parent, nodes.Admonition):
             self.add_text(node.astext() + ': ')
             raise nodes.SkipNode
@@ -403,6 +429,13 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                                       for x in self.states.pop() if x[0] == -1)
         self.stateindent.pop()
         self.states[-1].append((0, ['', text, '']))
+        
+        if hasattr(self, 'add_after_the_first_title'):
+            # We added the description title.
+            self.new_state(0)
+            self.add_text(self.add_after_the_first_title)
+            self.end_state(wrap=False, end=self.nl)
+            del self.add_after_the_first_title
 
     def visit_subtitle(self, node):
         # self.log_unknown("subtitle", node)
@@ -882,10 +915,21 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     depart_tip = _make_depart_admonition('tip')
     visit_warning = _visit_admonition
     depart_warning = _make_depart_admonition('warning')
+    
+    def _guess_language_code(self, node):
+        content = node.astext()
+        try:
+            ast.parse(content)
+            return "python"
+        except Exception:
+            return "text"
 
     def visit_literal_block(self, node):
-        self.add_text("```")
+        kind = self._guess_language_code(node)
         self.new_state(0)
+        self.add_text("```")
+        self.add_text(kind)
+        self.add_text(self.nl)
 
     def depart_literal_block(self, node):
         self.add_text(self.nl)
@@ -950,41 +994,47 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         raise NotImplementedError("Error")
 
     def visit_reference(self, node):
-        def clean_refuri(uri):
+
+        def clean_refuri_external(uri):
             ext = os.path.splitext(uri)[-1]
-            link = uri if ext != '.rst' else uri[:-4]
+            link = self.builder.clean_filename(uri) if ext == '.md' else uri
+            return link
+
+        def clean_refuri_internal(uri, hook):
+            ext = os.path.splitext(uri)[-1]
+            link = self.builder.clean_filename(uri) if ext == '.md' else uri
             return link
 
         if 'refuri' not in node:
             if 'name' in node.attributes:
-                self.add_text('[!%s]' % node['name'])
+                self.add_text('[!%s]' % clean_refuri_internal(node['name'], 'name'))
                 raise nodes.SkipNode
             elif 'refid' in node and node['refid']:
-                self.add_text('[!%s]' % node['refid'])
+                self.add_text('[!%s]' % clean_refuri_internal(node['refid'], 'refid'))
                 raise nodes.SkipNode
             else:
                 self.log_unknown(type(node), node)
                 raise nodes.SkipNode
         elif 'internal' not in node and 'name' in node.attributes:
             self.add_text('[%s](%s)' %
-                          (node['name'], clean_refuri(node['refuri'])))
+                          (node['name'], clean_refuri_external(node['refuri'])))
             raise nodes.SkipNode
         elif 'internal' not in node and 'names' in node.attributes:
             anchor = node['names'][0] if len(
                 node['names']) > 0 else node['refuri']
             self.add_text('[%s](%s)' %
-                          (anchor, clean_refuri(node['refuri'])))
+                          (anchor, clean_refuri_external(node['refuri'])))
             raise nodes.SkipNode
         elif 'reftitle' in node:
             # Include node as text, rather than with markup.
             # reST seems unable to parse a construct like ` ``literal`` <url>`_
             # Hence it reverts to the more simple `literal <url>`_
             self.add_text('[%s](%s)' %
-                          (node.astext(), clean_refuri(node['refuri'])))
+                          (node.astext(), clean_refuri_internal(node['refuri'], 'refuri')))
             # self.end_state(wrap=False)
             raise nodes.SkipNode
         else:
-            self.add_text('[%s](%s)' % (node.astext(), node['refuri']))
+            self.add_text('[%s](%s)' % (node.astext(), clean_refuri_external(node['refuri'])))
             raise nodes.SkipNode
 
     def depart_reference(self, node):
@@ -1151,14 +1201,6 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.add_text('.. CodeNode.' + self.nl)
 
     def depart_CodeNode(self, node):
-        pass
-
-    def visit_runpythonthis_node(self, node):
-        # for unit test.
-        pass
-
-    def depart_runpythonthis_node(self, node):
-        # for unit test.
         pass
 
     def unknown_visit(self, node):
