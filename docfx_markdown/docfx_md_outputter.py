@@ -994,7 +994,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         raise NotImplementedError("Error")
 
     def visit_reference(self, node):
-
+        
         def clean_refuri_external(uri):
             ext = os.path.splitext(uri)[-1]
             link = self.builder.clean_filename(uri) if ext == '.md' else uri
@@ -1003,27 +1003,33 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         def clean_refuri_internal(uri, hook):
             ext = os.path.splitext(uri)[-1]
             link = self.builder.clean_filename(uri) if ext == '.md' else uri
+            if ".md#l-" in link:
+                # Internal references do not work great, it should be replaced
+                # with the title of the page.
+                # Shortcut: remove the # part.
+                link = link.split("#")[0]
             return link
 
         if 'refuri' not in node:
             if 'name' in node.attributes:
-                self.add_text('[!%s]' % clean_refuri_internal(node['name'], 'name'))
+                cl = clean_refuri_internal(node['name'], 'name')
+                anchor = node['names'][0] if len(node['names']) > 0 else cl
+                self.add_text('[!%s](#%s)' % (anchor, cl))
                 raise nodes.SkipNode
             elif 'refid' in node and node['refid']:
-                self.add_text('[!%s]' % clean_refuri_internal(node['refid'], 'refid'))
+                cl = clean_refuri_internal(node['refid'], 'refid')
+                anchor = node['names'][0] if len(node['names']) > 0 else cl
+                self.add_text('[!%s](#%s)' % (anchor, cl))
                 raise nodes.SkipNode
             else:
                 self.log_unknown(type(node), node)
                 raise nodes.SkipNode
         elif 'internal' not in node and 'name' in node.attributes:
-            self.add_text('[%s](%s)' %
-                          (node['name'], clean_refuri_external(node['refuri'])))
+            self.add_text('[%s](%s)' % (node['name'], clean_refuri_external(node['refuri'])))
             raise nodes.SkipNode
         elif 'internal' not in node and 'names' in node.attributes:
-            anchor = node['names'][0] if len(
-                node['names']) > 0 else node['refuri']
-            self.add_text('[%s](%s)' %
-                          (anchor, clean_refuri_external(node['refuri'])))
+            anchor = node['names'][0] if len(node['names']) > 0 else node['refuri']
+            self.add_text('[%s](%s)' % (anchor, clean_refuri_external(node['refuri'])))
             raise nodes.SkipNode
         elif 'reftitle' in node:
             # Include node as text, rather than with markup.
