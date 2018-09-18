@@ -44,7 +44,7 @@ import jinja2
 from sphinx.util import logging
 from sphinx import addnodes
 from docutils.io import StringOutput
-from docutils.nodes import title as title_node, paragraph
+from docutils.nodes import title as title_node, paragraph, note as note_node
 from sphinx.builders import Builder
 from sphinx.util.osutil import ensuredir
 from docutils import nodes, writers
@@ -280,12 +280,13 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.add_after_the_first_title = self._add_header_metadata(node)
         self.no_title_yet = True
         
-    def _lookup_children(self, node, nodetype):
-        if nodetype is None or isinstance(node, nodetype):
-            yield node
-        for ch in node.children:
-            for it in self._lookup_children(ch, nodetype):
-                yield it
+    def _lookup_children(self, node, nodetype, notnodetype=None):
+        if notnodetype is None or not isinstance(node, notnodetype):        
+            if nodetype is None or isinstance(node, nodetype):
+                yield node
+            for ch in node.children:
+                for it in self._lookup_children(ch, nodetype, notnodetype):
+                    yield it
     
     def _add_header_metadata(self, node):
         if self.md_template is None:
@@ -299,13 +300,16 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
             
         # description
         description = None
-        for n in self._lookup_children(node, paragraph):
+        for n in self._lookup_children(node, paragraph, note_node):
             description = n
             break
-        
+            
         context = {'page_title': title.astext() if title else "",
                    'page_description': description.astext() if description else "",
                    'datetime': datetime}
+
+        if "Click here" in context["page_description"]:
+            raise Exception(description)
 
         return self.md_template.render(**context)
 
@@ -534,7 +538,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         pass
 
     def visit_desc_content(self, node):
-        self.new_state(self.indent)
+        self.new_state(0)
 
     def depart_desc_content(self, node):
         self.end_state()
@@ -909,12 +913,16 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     depart_hint = _make_depart_admonition('hint')
     visit_important = _visit_admonition
     depart_important = _make_depart_admonition('important')
-    visit_note = _visit_admonition
     depart_note = _make_depart_admonition('note')
     visit_tip = _visit_admonition
     depart_tip = _make_depart_admonition('tip')
     visit_warning = _visit_admonition
     depart_warning = _make_depart_admonition('warning')
+    
+    def visit_note(self, node):
+        if "sphx-glr-download-link-note" in str(node):
+            raise nodes.SkipNode
+        self.visit_admonition(node)
     
     def _guess_language_code(self, node):
         content = node.astext()
@@ -997,7 +1005,12 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         
         def clean_refuri_external(uri):
             ext = os.path.splitext(uri)[-1]
-            link = self.builder.clean_filename(uri) if ext == '.md' else uri
+            link = self.builder.clean_filename(uri) if ext == '.md' and not uri.startswith("http") else uri
+            if ".md#l-" in link:
+                # Internal references do not work great, it should be replaced
+                # with the title of the page.
+                # Shortcut: remove the # part.
+                link = link.split("#")[0]
             return link
 
         def clean_refuri_internal(uri, hook):
@@ -1009,38 +1022,48 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                 # Shortcut: remove the # part.
                 link = link.split("#")[0]
             return link
+            
+        mdlink = None
+        raise_skip = None
 
         if 'refuri' not in node:
             if 'name' in node.attributes:
                 cl = clean_refuri_internal(node['name'], 'name')
                 anchor = node['names'][0] if len(node['names']) > 0 else cl
-                self.add_text('[!%s](#%s)' % (anchor, cl))
-                raise nodes.SkipNode
+                mdlink = '[!%s](#%s)' % (anchor, cl)
+                raise_skip = "A"
             elif 'refid' in node and node['refid']:
                 cl = clean_refuri_internal(node['refid'], 'refid')
-                anchor = node['names'][0] if len(node['names']) > 0 else cl
-                self.add_text('[!%s](#%s)' % (anchor, cl))
-                raise nodes.SkipNode
+                anchor = node.astext()
+                if not anchor:
+                    anchor = node['names'][0] if len(node['names']) > 0 else cl
+                mdlink = '[%s](#%s)' % (anchor, cl)
+                raise_skip = "B"
             else:
                 self.log_unknown(type(node), node)
-                raise nodes.SkipNode
+                raise_skip = "C"
         elif 'internal' not in node and 'name' in node.attributes:
-            self.add_text('[%s](%s)' % (node['name'], clean_refuri_external(node['refuri'])))
-            raise nodes.SkipNode
+            mdlink = '[%s](%s)' % (node['name'], clean_refuri_external(node['refuri']))
+            raise_skip = "D"
         elif 'internal' not in node and 'names' in node.attributes:
             anchor = node['names'][0] if len(node['names']) > 0 else node['refuri']
-            self.add_text('[%s](%s)' % (anchor, clean_refuri_external(node['refuri'])))
-            raise nodes.SkipNode
+            mdlink = '[%s](%s)' % (anchor, clean_refuri_external(node['refuri']))
+            raise_skip = "E"
         elif 'reftitle' in node:
             # Include node as text, rather than with markup.
             # reST seems unable to parse a construct like ` ``literal`` <url>`_
             # Hence it reverts to the more simple `literal <url>`_
-            self.add_text('[%s](%s)' %
-                          (node.astext(), clean_refuri_internal(node['refuri'], 'refuri')))
+            mdlink = '[%s](%s)' % (node.astext(), clean_refuri_internal(node['refuri'], 'refuri'))
             # self.end_state(wrap=False)
-            raise nodes.SkipNode
+            raise_skip = "F"
         else:
-            self.add_text('[%s](%s)' % (node.astext(), clean_refuri_external(node['refuri'])))
+            mdlink = '[%s](%s)' % (node.astext(), clean_refuri_external(node['refuri']))
+            raise_skip = "G"
+            
+        if ".md#l-" in mdlink or "[!load-and-run-a-model](#load-and-run-a-model)" in mdlink:
+            raise ValueError("Unexpected value '{0}' ({2}) for node\n{1}".format(mdlink, node, raise_skip))
+        self.add_text(mdlink)
+        if raise_skip:
             raise nodes.SkipNode
 
     def depart_reference(self, node):
@@ -1159,13 +1182,6 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         if 'text' in node.get('format', '').split():
             self.add_text(node.astext())
         raise nodes.SkipNode
-
-    def visit_bigger_node(self, node):
-        self.add_text('**')
-        self.add_text(node['text'])
-
-    def depart_bigger_node(self, node):
-        self.add_text('**')
 
     def visit_issue(self, node):
         self.add_text('(issue ')
