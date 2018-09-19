@@ -234,7 +234,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.states.append([])
         self.stateindent.append(indent)
 
-    def end_state(self, wrap=False, end=[''], first=None):
+    def end_state(self, wrap=False, end=[''], first=None, oneliner=False):
         content = self.states.pop()
         maxindent = sum(self.stateindent)
         indent = self.stateindent.pop()
@@ -272,6 +272,21 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
             if item:
                 result.insert(0, (itemindent - indent, [first + item[0]]))
                 result[1] = (itemindent, item[1:])
+        
+        if oneliner:
+            # We gather all lines in one if possible.
+            ponctuation = "*#"
+            rows = []
+            for code, line in result:
+                if not isinstance(line, list):
+                    raise TypeError("line is not a list (code={1})\n{0}".format(line, code))
+                if len(line) > 1:
+                    lastline = line[-1] == ''
+                    line = [" ".join(line).rstrip()]
+                    if lastline:
+                        line.append('')
+                rows.append((code, line))
+            result = rows
         self.states[-1].extend(result)
 
     def visit_document(self, node):
@@ -808,14 +823,14 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         elif self.list_counter[-1] == -2:
             pass
         else:
-            self.end_state(first='%s. ' % self.list_counter[-1], end=None)
+            self.end_state(first='%s. ' % self.list_counter[-1], end=None)            
 
     def visit_definition_list_item(self, node):
         self._li_has_classifier = len(node) >= 2 and \
             isinstance(node[1], nodes.classifier)
 
     def depart_definition_list_item(self, node):
-        pass
+        self.add_text(self.nl)
 
     def visit_term(self, node):
         self.new_state(0)
@@ -977,7 +992,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def depart_paragraph(self, node):
         if not isinstance(node.parent, nodes.Admonition) or \
                 isinstance(node.parent, addnodes.seealso):
-            self.end_state()
+            self.end_state(oneliner=True)
 
     def visit_target(self, node):
         raise nodes.SkipNode
@@ -1242,8 +1257,8 @@ def setup(app):
     template = """
 ---
 author: microsoft
-title: '{{page_title.replace("'", "''")}}'
-description: '{{page_description.replace("'", "''")}}'
+title: '{{page_title.replace("'", "''").strip()}}'
+description: '{{page_description.replace("'", "''").replace("\\n", " ").strip()}}'
 ms.date: {{datetime.now().strftime("%Y-%m-%d")}}
 ---    
     """
