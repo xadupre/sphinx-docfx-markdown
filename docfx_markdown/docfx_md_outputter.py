@@ -50,7 +50,6 @@ from sphinx.util.osutil import ensuredir
 from docutils import nodes, writers
 from sphinx.locale import admonitionlabels, versionlabels, _
 from sphinx.writers.text import TextTranslator, MAXWIDTH, STDINDENT
-from docfx_yaml.extension import PAGE, insert_page
 from ._sphinx_common_builder import CommonSphinxWriterHelpers
 
 
@@ -140,7 +139,7 @@ class DocFxMdBuilder(Builder):
         
     def clean_filename(self, relative_name):
         name, ext = os.path.splitext(relative_name)
-        name = name.replace("\\", "/").replace("/", ".").replace("_", "-")
+        name = name.replace("\\", "/").replace("/", ".").replace("_", "-").replace(".", "-")
         return name + ext
 
     def get_outfilename(self, pagename):
@@ -292,7 +291,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def visit_document(self, node):
         self.new_state(0)
         self._insert_to_yaml(node)
-        self.add_after_the_first_title = self._add_header_metadata(node)
+        self.add_before_the_first_title = self._add_header_metadata(node)
         self.no_title_yet = True
         
     def _lookup_children(self, node, nodetype, notnodetype=None):
@@ -324,7 +323,9 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                    'datetime': datetime}
 
         if "Click here" in context["page_description"]:
-            raise Exception(description)
+            raise ValueError("Content in note was added to the description:\n{0}".format(description))
+        if "===" in context["page_description"]:
+            raise ValueError("Title is part of the description:\n{0}".format(description))
 
         return self.md_template.render(**context)
 
@@ -374,8 +375,10 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def _insert_to_yaml(self, node):
         if not hasattr(self.builder.env, 'docfx_info_uid_types'):
             return
+        if not hasattr(self.builder.env, 'docfx_yaml_pages'):
+            return
         
-        datam = self._get_docfx_data(node, PAGE)
+        datam = self._get_docfx_data(node, "PAGE")
         
         if datam[PAGE] in self.builder.env.docfx_yaml_pages:
             self.builder.logger.warning("[docfx] document '{0}' already added".format(datam['name']))
@@ -385,9 +388,15 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         if not hasattr(self.builder.env, 'docfx_info_uid_types'):
             return
             
-        datam = self._get_docfx_data(node, PAGE)        
-        insert_page(self.builder, PAGE, datam)
-        self.builder.env.docfx_info_uid_types[datam['uid']] = PAGE
+        datam = self._get_docfx_data(node, "PAGE")
+        self._insert_page_for_yaml("PAGE", datam)
+        
+        if hasattr(self.builder.env, 'docfx_info_uid_types'):
+            self.builder.env.docfx_info_uid_types[datam['uid']] = "PAGE"
+        
+    def _insert_page_for_yaml(self, key, datam):
+        # Not implemented.
+        pass
 
     def visit_highlightlang(self, node):
         raise nodes.SkipNode
@@ -434,12 +443,18 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         if hasattr(self, "no_title_yet") and self.no_title_yet:
             self.clean_everything()
             self.no_title_yet = False
+        if hasattr(self, 'add_before_the_first_title') and self.add_before_the_first_title:
+            # We added the description title.
+            self.new_state(0)
+            self.add_text(self.add_before_the_first_title)
+            self.end_state(wrap=False, end=self.nl)
+            del self.add_before_the_first_title        
         if isinstance(node.parent, nodes.Admonition):
             self.add_text(node.astext() + ': ')
             raise nodes.SkipNode
         self.new_state(0)
 
-    def depart_title(self, node):
+    def depart_title(self, node):        
         if isinstance(node.parent, nodes.section):
             prefix = "#" * self.sectionlevel
         else:
@@ -448,13 +463,6 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                                       for x in self.states.pop() if x[0] == -1)
         self.stateindent.pop()
         self.states[-1].append((0, ['', text, '']))
-        
-        if hasattr(self, 'add_after_the_first_title'):
-            # We added the description title.
-            self.new_state(0)
-            self.add_text(self.add_after_the_first_title)
-            self.end_state(wrap=False, end=self.nl)
-            del self.add_after_the_first_title
 
     def visit_subtitle(self, node):
         # self.log_unknown("subtitle", node)
@@ -1222,14 +1230,14 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def visit_only(self, node):
         ev = self.eval_expr(node.attributes['expr'])
         if ev:
-            pass
+            self.new_state(0)
         else:
             raise nodes.SkipNode
 
     def depart_only(self, node):
         ev = self.eval_expr(node.attributes['expr'])
         if ev:
-            pass
+            self.end_state()
         else:
             # The program should not necessarily be here.
             pass
