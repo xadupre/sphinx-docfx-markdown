@@ -477,21 +477,37 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def depart_attribution(self, node):
         pass
 
-    def visit_desc(self, node):
+    def visit_desc(self, node):        
         self.new_state(0)
+        if node["objtype"] in ('class', 'function', 'exception', 'method'):
+            try:
+                self._title_char = self.sectionchars[self.sectionlevel]
+            except IndexError as e:
+                raise RuntimeError("sectionlevel is too high: {0} for '{1}'\n{2}".format(
+                                   self.sectionlevel, self.sectionchars,
+                                   node))
+            self.sectionlevel += 1
+            prefix = "#" * self.sectionlevel
+            self.add_text(prefix + " ")
 
     def depart_desc(self, node):
+        if node["objtype"] in ('class', 'function', 'exception', 'method'):
+            self.sectionlevel -= 1
         self.end_state()
 
     def visit_desc_signature(self, node):
-        if node.parent['objtype'] in ('class', 'exception', 'method', 'function'):
-            self.add_text('**')
+        if node.parent['objtype'] in ('class', 'exception', 'function'):
+            pass
+        elif node.parent['objtype'] in ('method', ):
+            pass
         else:
             self.add_text('``')
 
     def depart_desc_signature(self, node):
-        if node.parent['objtype'] in ('class', 'exception', 'method', 'function'):
-            self.add_text('**')
+        if node.parent['objtype'] in ('class', 'exception', 'function'):
+            pass
+        elif node.parent['objtype'] in ('method', ):
+            pass
         else:
             self.add_text('``')
 
@@ -993,14 +1009,23 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         pass
 
     def visit_paragraph(self, node):
-        if not isinstance(node.parent, nodes.Admonition) or \
+        if isinstance(node.parent, nodes.section):
+            self.new_state(0)
+            self.add_text('\n')
+            self.new_state(0)
+        elif not isinstance(node.parent, nodes.Admonition) or \
                 isinstance(node.parent, addnodes.seealso):
             self.new_state(0)
 
     def depart_paragraph(self, node):
-        if not isinstance(node.parent, nodes.Admonition) or \
+        if isinstance(node.parent, nodes.section):
+            self.end_state(oneliner=True, end=[''])
+            self.end_state(oneliner=True, end=[''])
+        elif isinstance(node.parent, nodes.list_item):
+            self.end_state(oneliner=True, end=None)
+        elif not isinstance(node.parent, nodes.Admonition) or \
                 isinstance(node.parent, addnodes.seealso):
-            self.end_state(oneliner=True)
+            self.end_state(oneliner=True, end=[''])
 
     def visit_target(self, node):
         raise nodes.SkipNode
