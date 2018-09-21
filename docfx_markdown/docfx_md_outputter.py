@@ -45,6 +45,7 @@ from sphinx.util import logging
 from sphinx import addnodes
 from docutils.io import StringOutput
 from docutils.nodes import title as title_node, paragraph, note as note_node
+from sphinx.addnodes import desc_name, desc_addname
 from sphinx.builders import Builder
 from sphinx.util.osutil import ensuredir
 from docutils import nodes, writers
@@ -97,6 +98,7 @@ class DocFxMdBuilder(Builder):
             self.link_transform = link_transform
         self.md_image_dest = self.config.md_image_dest
         self.md_template = jinja2.Template(self.config.md_header_template)
+        self.md_link_replace = self.config.md_link_replace
         
     def get_outdated_docs(self):
         """
@@ -212,6 +214,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         self.wrapper = textwrap.TextWrapper(
             width=STDINDENT, break_long_words=False, break_on_hyphens=False)
         self.md_template = self.builder.md_template
+        self.md_link_replace = self.builder.md_link_replace
         
     def clean_everything(self):
         self.states = [[]]
@@ -488,26 +491,39 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                                    node))
             self.sectionlevel += 1
             prefix = "#" * self.sectionlevel
-            self.add_text(prefix + " ")
+            clpr = "class-" if node["objtype"] == "class" else ""
+            names = []
+            for n in self._lookup_children(node, (desc_addname, desc_name)):
+                names.append(n)
+                if len(names) >= 2:
+                    break
+            name = "".join([n.astext() for n in names]).strip()
+            if not name:
+                chs = "\n".join(str(n) for n in node.children)
+                raise ValueError("Unable to guess object name found {0} children\n{1}\n{2}".format(len(names), node, chs))
+            title = "{0} {1}{2}".format(prefix, clpr, name)
+            self.add_text(title)
+            self.new_state(0)
 
     def depart_desc(self, node):
         if node["objtype"] in ('class', 'function', 'exception', 'method'):
             self.sectionlevel -= 1
+            self.end_state()
         self.end_state()
 
     def visit_desc_signature(self, node):
         if node.parent['objtype'] in ('class', 'exception', 'function'):
-            pass
+            self.add_text('``')
         elif node.parent['objtype'] in ('method', ):
-            pass
+            self.add_text('``')
         else:
             self.add_text('``')
 
     def depart_desc_signature(self, node):
         if node.parent['objtype'] in ('class', 'exception', 'function'):
-            pass
+            self.add_text('``')
         elif node.parent['objtype'] in ('method', ):
-            pass
+            self.add_text('``')
         else:
             self.add_text('``')
 
@@ -816,6 +832,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
 
     def depart_bullet_list(self, node):
         self.list_counter.pop()
+        self.add_text(self.nl)
 
     def visit_enumerated_list(self, node):
         self.list_counter.append(0)
@@ -1011,7 +1028,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
     def visit_paragraph(self, node):
         if isinstance(node.parent, nodes.section):
             self.new_state(0)
-            self.add_text('\n')
+            self.add_text(self.nl)
             self.new_state(0)
         elif not isinstance(node.parent, nodes.Admonition) or \
                 isinstance(node.parent, addnodes.seealso):
@@ -1069,6 +1086,7 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                 # with the title of the page.
                 # Shortcut: remove the # part.
                 link = link.split("#")[0]
+            link = link.lower().replace(".", "").replace(" ", "-").replace("_", "-")
             return link
             
         mdlink = None
@@ -1081,12 +1099,21 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
                 mdlink = '[!%s](#%s)' % (anchor, cl)
                 raise_skip = "A"
             elif 'refid' in node and node['refid']:
-                cl = clean_refuri_internal(node['refid'], 'refid')
-                anchor = node.astext()
-                if not anchor:
-                    anchor = node['names'][0] if len(node['names']) > 0 else cl
-                mdlink = '[%s](#%s)' % (anchor, cl)
-                raise_skip = "B"
+                if 'internal' in node and node['internal']:
+                    cl = clean_refuri_internal(node['refid'], 'refid')
+                    anchor = node.astext()
+                    if not anchor:
+                        anchor = node['names'][0] if len(node['names']) > 0 else cl
+                    prefix = 'class-' if 'py-class' in str(node) else ''
+                    mdlink = '[%s](#%s%s)' % (anchor, prefix, cl)
+                    raise_skip = "Z"
+                else:
+                    cl = clean_refuri_internal(node['refid'], 'refid')
+                    anchor = node.astext()
+                    if not anchor:
+                        anchor = node['names'][0] if len(node['names']) > 0 else cl
+                    mdlink = '[%s](#%s)' % (anchor, cl)
+                    raise_skip = "B"
             else:
                 self.log_unknown(type(node), node)
                 raise_skip = "C"
@@ -1107,7 +1134,12 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
         else:
             mdlink = '[%s](%s)' % (node.astext(), clean_refuri_external(node['refuri']))
             raise_skip = "G"
-            
+
+        # Replacements.
+        if self.md_link_replace is not None:
+            for k, v in self.md_link_replace.items():
+                mdlink = mdlink.replace(k, v)
+
         if ".md#l-" in mdlink or "[!load-and-run-a-model](#load-and-run-a-model)" in mdlink:
             raise ValueError("Unexpected value '{0}' ({2}) for node\n{1}".format(mdlink, node, raise_skip))
         self.add_text(mdlink)
@@ -1286,6 +1318,7 @@ def setup(app):
     app.add_config_value('md_link_transform', None, 'env')
     app.add_config_value('md_indent', STDINDENT, 'env')
     app.add_config_value('md_image_dest', None, 'env')
+    app.add_config_value('md_link_replace', None, 'env')
     
     template = """
 ---
