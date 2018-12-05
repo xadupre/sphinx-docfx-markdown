@@ -1304,6 +1304,12 @@ class DocFxMdTranslator(TextTranslator, CommonSphinxWriterHelpers):
 
     def depart_CodeNode(self, node):
         pass
+    
+    def visit_runpython_node(self, node):
+        pass
+
+    def depart_runpython_node(self, node):
+        pass
 
     def unknown_visit(self, node):
         raise NotImplementedError(
